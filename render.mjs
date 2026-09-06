@@ -1,9 +1,10 @@
 // render.mjs
-// Renders "NUMERIKA.LAB Reel Lunes.html" frame by frame with Puppeteer and
+// Renders a NUMERIKA.LAB reel HTML file frame by frame with Puppeteer and
 // encodes the frames into an MP4 (H.264) with ffmpeg.
 //
 // Usage:
-//   node render.mjs [--fps=30] [--scale=1] [--out=numerika-reel-lunes.mp4] [--keep-frames]
+//   node render.mjs [--html="NUMERIKA.LAB Reel Lunes.html"] [--fps=30] [--scale=1]
+//                   [--out=numerika-reel-lunes.mp4] [--keep-frames]
 
 import puppeteer from 'puppeteer-core';
 import { spawn } from 'node:child_process';
@@ -18,8 +19,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CHROMIUM_PATH = '/opt/pw-browsers/chromium';
 const FFMPEG_PATH = '/usr/bin/ffmpeg';
-const HTML_FILE_NAME = 'NUMERIKA.LAB Reel Lunes.html';
-const FRAMES_DIR = path.join(__dirname, '.render-frames');
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -67,10 +66,17 @@ const args = Object.fromEntries(
   })
 );
 
+const HTML_FILE_NAME = args.html || 'NUMERIKA.LAB Reel Lunes.html';
 const FPS = Number(args.fps || 30);
 const SCALE = Number(args.scale || 1);
-const OUT_FILE = path.join(__dirname, args.out || 'numerika-reel-lunes.mp4');
+const DEFAULT_OUT = 'numerika-reel-' + path.basename(HTML_FILE_NAME, '.html')
+  .toLowerCase()
+  .replace(/^numerika\.lab reel /, '')
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '') + '.mp4';
+const OUT_FILE = path.join(__dirname, args.out || DEFAULT_OUT);
 const KEEP_FRAMES = Boolean(args['keep-frames']);
+const FRAMES_DIR = path.join(__dirname, '.render-frames-' + path.basename(OUT_FILE, '.mp4'));
 
 const WIDTH = 1080;
 const HEIGHT = 1920;
