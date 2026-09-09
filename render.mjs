@@ -2,9 +2,16 @@
 // Renders a NUMERIKA.LAB reel HTML file frame by frame with Puppeteer and
 // encodes the frames into an MP4 (H.264) with ffmpeg.
 //
+// Supports two animation engines:
+//   - v1 (default): animations.jsx — window.NK_ready / NK_DURATION / NK_seek(t),
+//     content root at '#reel-root'.
+//   - v3 (--engine=v3): animations-v3.jsx — CompositionStage, which exposes
+//     the exportable root as '[data-om-exportable-video-with-duration-secs]'
+//     and seeks via a 'data-om-seek-to-time-frame' CustomEvent.
+//
 // Usage:
 //   node render.mjs [--html="NUMERIKA.LAB Reel Lunes.html"] [--fps=30] [--scale=1]
-//                   [--out=numerika-reel-lunes.mp4] [--keep-frames]
+//                   [--out=numerika-reel-lunes.mp4] [--keep-frames] [--engine=v1|v3]
 
 import puppeteer from 'puppeteer-core';
 import { spawn } from 'node:child_process';
@@ -77,6 +84,7 @@ const DEFAULT_OUT = 'numerika-reel-' + path.basename(HTML_FILE_NAME, '.html')
 const OUT_FILE = path.join(__dirname, args.out || DEFAULT_OUT);
 const KEEP_FRAMES = Boolean(args['keep-frames']);
 const FRAMES_DIR = path.join(__dirname, '.render-frames-' + path.basename(OUT_FILE, '.mp4'));
+const ENGINE = args.engine || 'v1';
 
 const WIDTH = 1080;
 const HEIGHT = 1920;
@@ -106,6 +114,7 @@ async function main() {
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
       '--force-color-profile=srgb',
       '--font-render-hinting=none',
       '--disable-lcd-text',
@@ -129,27 +138,51 @@ async function main() {
     console.log('› Cargando', pageUrl);
     await page.goto(pageUrl, { waitUntil: 'load' });
 
-    // Fonts are self-hosted locally (assets/fonts); wait for them to be ready.
-    await page.evaluate(() => document.fonts && document.fonts.ready).catch(() => {});
+    // Fonts are self-hosted locally (assets/fonts); give them a moment to
+    // settle. document.fonts.ready can take a few seconds in this sandbox
+    // (background Chromium network noise slows the renderer), so cap the
+    // wait rather than block on it indefinitely.
+    await Promise.race([
+      page.evaluate(() => document.fonts && document.fonts.ready).catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, 8000)),
+    ]);
 
-    console.log('› Esperando a que la escena esté lista (window.NK_ready)…');
-    await page.waitForFunction('window.NK_ready === true', { timeout: 30000 });
-
-    const duration = await page.evaluate(() => window.NK_DURATION);
-    console.log(`› Duración detectada: ${duration}s @ ${FPS}fps`);
+    let duration, target;
+    if (ENGINE === 'v3') {
+      const sel = '[data-om-exportable-video-with-duration-secs]';
+      console.log('› Esperando la raíz exportable del motor v3…');
+      target = await page.waitForSelector(sel, { timeout: 30000 });
+      duration = await page.evaluate(
+        (s) => parseFloat(document.querySelector(s).getAttribute('data-om-exportable-video-with-duration-secs')),
+        sel
+      );
+    } else {
+      console.log('› Esperando a que la escena esté lista (window.NK_ready)…');
+      await page.waitForFunction('window.NK_ready === true', { timeout: 30000 });
+      duration = await page.evaluate(() => window.NK_DURATION);
+      target = await page.waitForSelector('#reel-root');
+    }
+    console.log(`› Duración detectada: ${duration}s @ ${FPS}fps (motor ${ENGINE})`);
 
     const totalFrames = Math.ceil(duration * FPS);
-    const reelRoot = await page.waitForSelector('#reel-root');
 
     for (let i = 0; i < totalFrames; i++) {
       const t = i / FPS;
-      await page.evaluate((time) => window.NK_seek(time), t);
+      if (ENGINE === 'v3') {
+        await page.evaluate((sel, time) => {
+          document.querySelector(sel).dispatchEvent(new CustomEvent('data-om-seek-to-time-frame', {
+            detail: { time, sync: true, playing: false },
+          }));
+        }, '[data-om-exportable-video-with-duration-secs]', t);
+      } else {
+        await page.evaluate((time) => window.NK_seek(time), t);
+      }
       // Two RAF ticks so React has committed and the browser has painted.
       await page.evaluate(
         () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
       );
       const framePath = path.join(FRAMES_DIR, `frame_${String(i).padStart(5, '0')}.png`);
-      await reelRoot.screenshot({ path: framePath });
+      await target.screenshot({ path: framePath });
       if (i % FPS === 0 || i === totalFrames - 1) {
         console.log(`  frame ${i + 1}/${totalFrames} (t=${t.toFixed(2)}s)`);
       }
